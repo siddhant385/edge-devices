@@ -1,0 +1,24 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+venv/
+ENV/
+
+# Device-specific configuration and runtime state
+.env
+.env.*
+!.env.example
+data/
+models/*.onnx
+models/*.pt
+
+# Temporary files
+*.tmp
+*.bak
