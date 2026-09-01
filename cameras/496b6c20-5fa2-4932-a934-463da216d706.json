@@ -1,0 +1,19 @@
+{
+    "id": "496b6c20-5fa2-4932-a934-463da216d706",
+    "source": "rtsp://localhost:8554/mystream",
+    "process_every_n_frames": 5,
+    "inference_size": 640,
+    "confidence_threshold": 0.45,
+    "nms_threshold": 0.5,
+    "target_class_ids": [
+        0
+    ],
+    "enabled_plugins": [
+        "evidence_capture"
+    ],
+    "intrusion_zone_polygon": [],
+    "virtual_border_line": null,
+    "evidence_source_feature": "object_detection",
+    "evidence_max_width": 1280,
+    "evidence_jpeg_quality": 75
+}

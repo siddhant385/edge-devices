@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from config.settings import Settings
+from config.camera_settings import CameraSettings
 from plugins.base import FeatureEvent, FrameContext, PluginServices
 
 
@@ -11,7 +11,7 @@ class ObjectDetectionPlugin:
 
     name = "object_detection"
 
-    def __init__(self, settings: Settings, services: PluginServices) -> None:
+    def __init__(self, settings: CameraSettings, services: PluginServices) -> None:
         self._services = services
         self._confidence_threshold = settings.confidence_threshold
         self._nms_threshold = settings.nms_threshold
@@ -26,10 +26,11 @@ class ObjectDetectionPlugin:
 
         # One CPU ONNX session is shared across cameras to bound edge-device memory and CPU use.
         with self._services.inference_lock:
-            context.detections = self._services.processor.detect(
-                context.frame,
-                confidence_threshold=self._confidence_threshold,
-                nms_threshold=self._nms_threshold,
-                target_class_ids=self._target_class_ids,
-            )
+            # We explicitly update the processor's thresholds before running inference
+            # since the processor is shared across multiple cameras with different settings
+            self._services.processor._confidence_threshold = self._confidence_threshold
+            self._services.processor._nms_threshold = self._nms_threshold
+            self._services.processor._target_class_ids = self._target_class_ids
+            
+            context.detections = self._services.processor.detect(context.frame)
         return [FeatureEvent(self.name, context.detections)]

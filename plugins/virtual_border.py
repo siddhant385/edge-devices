@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import supervision as sv
 
-from config.settings import Settings
+from config.camera_settings import CameraSettings
 from plugins.base import FeatureEvent, FrameContext, PluginServices
 
 
@@ -13,7 +13,7 @@ class VirtualBorderPlugin:
 
     name = "virtual_border"
 
-    def __init__(self, settings: Settings, services: PluginServices) -> None:
+    def __init__(self, settings: CameraSettings, services: PluginServices) -> None:
         if not settings.virtual_border_line:
             raise ValueError(
                 "VIRTUAL_BORDER_LINE is required for virtual_border"

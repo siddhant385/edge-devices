@@ -10,8 +10,8 @@ from typing import Protocol
 import numpy as np
 import supervision as sv
 
-from config.settings import Settings
-from core.processor import OnnxProcessor
+from config.camera_settings import CameraSettings
+from core.ai.processor import OnnxProcessor
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +46,6 @@ class VisionPlugin(Protocol):
 
     name: str
 
-    def __init__(self, settings: Settings, services: PluginServices) -> None: ...
+    def __init__(self, settings: CameraSettings, services: PluginServices) -> None: ...
 
     def process(self, context: FrameContext) -> list[FeatureEvent]: ...

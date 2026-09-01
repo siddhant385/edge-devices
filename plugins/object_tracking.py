@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import supervision as sv
 
-from config.settings import Settings
+from config.camera_settings import CameraSettings
 from plugins.base import FeatureEvent, FrameContext, PluginServices
 
 class ObjectTrackingPlugin:
@@ -12,7 +12,7 @@ class ObjectTrackingPlugin:
 
     name = "object_tracking"
 
-    def __init__(self, settings: Settings, services: PluginServices) -> None:
+    def __init__(self, settings: CameraSettings, services: PluginServices) -> None:
         # We also want to smooth the bounding boxes to avoid jitter
         try:
             from supervision.trackers.byte_tracker.core import ByteTrack
