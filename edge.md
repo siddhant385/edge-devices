@@ -1,119 +1,118 @@
-# Edge-to-Supabase Direct Integration Plan
+# Edge-to-Supabase Direct Integration
 
 ## Overview
-This document outlines the architectural shift to have IBVAP Edge devices communicate directly with Supabase, eliminating the FastAPI middleware. This approach leverages Supabase's native REST APIs, Realtime WebSockets, and Storage capabilities to simplify deployment, reduce latency, and lower server costs.
+
+IBVAP edge devices communicate directly with Supabase: PostgREST for inserts, Supabase Storage for JPEG evidence, and Supabase Realtime (WebSockets) for live configuration updates. There is no intermediate FastAPI layer on the server side.
 
 ---
 
-## 1. Security & Authentication Strategy (Replacing Bcrypt)
+## 1. Authentication
 
-Currently, the central server uses a static API key hashed with `bcrypt`. Since Edge devices will now talk directly to Supabase, we must adapt to Supabase's native authentication model (PostgREST + Row Level Security).
+The edge is provisioned as a first-class Supabase Auth user. The provisioning flow lives in the Next.js dashboard, not on the edge:
 
-### The New Auth Flow (Supabase Auth for Devices)
-We cannot securely pass a plaintext API key to Supabase PostgREST if it is hashed with bcrypt in the database. Instead, **Edge Devices will become First-Class Supabase Users**.
+1. Operator clicks "Register Edge Device" in the dashboard.
+2. Dashboard calls `supabase.auth.admin.create_user()` with:
+   - `email`: `edge-001@devices.ibvap.internal` (virtual email)
+   - `password`: a strong randomly-generated string, shown to the operator once
+3. Dashboard inserts a row into the `devices` table linking `auth_user_id` to a `device_id` slug.
+4. Operator writes `DEVICE_EMAIL` and `DEVICE_PASSWORD` into the edge's `.env`.
 
-1. **Device Provisioning (Next.js Dashboard):**
-   - When an operator clicks "Register Edge Device", the Next.js app uses the Supabase Admin API to create a new "User" in Supabase Auth.
-   - Email: `edge-001@devices.ibvap.internal` (Virtual email)
-   - Password: A strong, randomly generated 32-character string.
-   - The Next.js UI displays this password **once** (just like the old API key).
+On boot, the edge calls `supabase.auth.sign_in_with_password()` and stores the JWT + refresh token. The supabase-py async client auto-refreshes before expiry.
 
-2. **Edge Device Configuration:**
-   - The edge device `.env` is updated:
-     ```env
-     SUPABASE_URL=https://<your-project>.supabase.co
-     SUPABASE_ANON_KEY=<your-anon-key>
-     DEVICE_EMAIL=edge-001@devices.ibvap.internal
-     DEVICE_PASSWORD=<the-generated-password>
-     ```
-
-3. **Edge Startup Routine:**
-   - On boot, the edge device calls `supabase.auth.sign_in_with_password()`.
-   - Supabase returns a JWT (Access Token) valid for 1 hour, and a Refresh Token.
-   - A background thread automatically uses the Refresh Token every 45 minutes to keep the session alive indefinitely.
-   - Every request to Supabase Storage or Database uses this JWT.
-
-4. **Row Level Security (RLS):**
-   - We implement Postgres RLS policies:
-     ```sql
-     CREATE POLICY "Devices can insert own alerts" ON alerts
-     FOR INSERT WITH CHECK (auth.uid() IN (SELECT auth_user_id FROM devices WHERE id = alerts.device_id));
-     ```
-   - This ensures a compromised edge device cannot read the watchlist or alter data belonging to other border posts.
+Row Level Security on `detections`, `alerts`, and `devices` is keyed off `auth.uid()` — a compromised device cannot read or write other devices' data.
 
 ---
 
-## 2. Refactoring Edge Components
+## 2. Sender (`core/cloud/sender.py`)
 
-The `IBVAP-edge` repository will require modifications to three core network components. We will use the official `supabase-py` SDK or raw `aiohttp`/`requests` targeting Supabase endpoints.
+### Per-event flow
 
-### A. `sender.py` (Alert & Evidence Delivery)
-**Current:** Base64-encodes images, wraps them in a massive JSON payload, and `POST`s to FastAPI.
-**New Flow:**
-1. **Upload Image:** If evidence exists, upload the raw JPEG bytes directly to Supabase Storage:
+1. **JPEG upload** to Supabase Storage (`evidence` bucket):
    ```python
-   # PUT /storage/v1/object/evidence/{device_id}/{camera_id}/{date}/{uuid}.jpg
-   res = supabase.storage.from_("evidence").upload(path, raw_jpeg_bytes)
+   supabase.storage.from_("evidence").upload(
+       f"{device_id}/{camera_id}/{date}/{uuid}.jpg",
+       evidence_jpeg_bytes,
+       {"content-type": "image/jpeg"},
+   )
    ```
-2. **Insert Alert:** `POST` the JSON metadata (without base64) directly to the `alerts` table:
+2. **Detection row insert** into `detections` via PostgREST. Each bounding box is one row.
+3. **Alert row insert** into `alerts` for spatial events with attached evidence:
    ```python
-   # POST /rest/v1/alerts
    supabase.table("alerts").insert({
-       "device_id": device_id,
-       "evidence_path": path, # from step 1
-       "detection_count": len(detections)
+       "device_id": device_uuid,
+       "camera_id": camera_uuid,
+       "detection_id": detection_uuid,
+       "evidence_path": path,
+       "severity": "critical",
+       "status": "unacknowledged",
+       "raw_payload": {...},
    }).execute()
    ```
 
-### B. `control_receiver.py` (Configuration Sync)
-**Current:** Maintains a long-lived HTTP SSE connection to FastAPI (`EventSourceResponse`).
-**New Flow:**
-Utilize **Supabase Realtime** (WebSockets connected directly to Postgres).
-1. Edge device subscribes to the `device_settings` table, filtered by its own `device_id`:
-   ```python
-   channel = supabase.channel(f"settings-{device_id}")
-   channel.on(
-       "postgres_changes",
-       event="UPDATE",
-       schema="public",
-       table="device_settings",
-       filter=f"device_id=eq.{device_id}",
-       callback=handle_new_settings
-   ).subscribe()
-   ```
-2. When the Next.js dashboard updates the virtual fence, Supabase instantly pushes the JSON payload over the WebSocket to the edge device. 
-3. *Benefit:* Supabase Realtime handles auto-reconnection natively, dropping the need for our custom reconnect loops.
+### Offline handling
 
-### C. `heartbeat.py` (Health Monitoring)
-**Current:** `POST`s to FastAPI which runs an `UPDATE` query.
-**New Flow:**
-Direct `UPDATE` (or `UPSERT` into a dedicated health table) via PostgREST:
+If any step fails (timeout, 5xx, network drop), the entire event is appended to `data/outbox.jsonl` and retried on the next tick. Capped at `QUEUE_MAX_RECORDS` (default 1000) with FIFO eviction.
+
+---
+
+## 3. Control Receiver (`core/cloud/control_receiver.py`)
+
+The edge subscribes to Postgres changes on `device_settings`:
+
 ```python
-supabase.table("devices").update({
-    "is_online": True,
-    "last_seen_at": "now()",
-    "metrics": { "cpu": cpu_percent, "mem": mem_percent }
-}).eq("id", device_id).execute()
+channel = supabase.channel(f"settings-{device_id}")
+channel.on(
+    "postgres_changes",
+    event="UPDATE",
+    schema="public",
+    table="device_settings",
+    filter=f"device_id=eq.{device_id}",
+    callback=handle_new_settings,
+).subscribe()
 ```
 
----
+When the dashboard updates `device_settings.settings`, Supabase pushes the new JSONB over the WebSocket. `handle_new_settings` validates the keys against `REMOTE_SETTING_NAMES` and calls `apply_remote_camera_settings` on each camera. The change takes effect on the next `run_camera_async` tick when `PluginManager` is rebuilt.
 
-## 3. Handling AI Inference (The Headless Worker)
-
-Since FastAPI is gone, the ONNX Face/ANPR models need a new home.
-
-1. **The Worker:** We extract the AI logic from the old FastAPI code into a standalone Python script (`ai_worker.py`).
-2. **The Trigger:** The worker listens to Supabase Realtime for `INSERT` events on the `alerts` table where `class_id` indicates a person or vehicle.
-3. **The Execution:** 
-   - Downloads the `evidence.jpg` from Supabase Storage.
-   - Runs the ONNX model (ArcFace/LPRNet).
-   - Writes the resulting embeddings to the `face_results` or `known_faces` tables via Supabase DB API.
-4. **Deployment:** This worker can run anywhere—on a cheap Linux VPS, a dedicated GPU server, or even inside a Docker container on ModelScope. It does not expose any web ports.
+Supabase Realtime handles reconnection natively with exponential backoff — no custom retry loop is needed.
 
 ---
 
-## Summary of Benefits
-* **Cost:** Eliminated the need to host a public-facing Python web server.
-* **Bandwidth:** Stopped sending 500KB Base64 strings inside JSON payloads.
-* **Resilience:** Supabase Realtime WebSockets are far more robust than HTTP SSE for configuration syncing.
-* **Security:** Transitioned from a custom bcrypt solution to industry-standard JWTs and Postgres Row Level Security.
+## 4. Camera Manager (`core/cloud/camera_manager.py`)
+
+`cameras/*.json` is the source of truth on disk. On boot, `CameraManager.load_local_cameras()` reads every file and registers the cameras in Supabase:
+
+- If a `camera_id` is missing in Supabase, insert a row.
+- If the local source URL differs from the cloud `source_url`, update the cloud row.
+- Push the per-camera settings (`camera_settings` table) so the dashboard can render the current polygon / line / enabled plugins.
+
+This means cameras added offline (by editing JSON on the device) show up in the dashboard automatically on the next reconnect.
+
+---
+
+## 5. Metadata Reporter (`core/cloud/metadata_reporter.py`)
+
+When a camera connects (`CameraReceiver._on_online_change(True)`), the reporter queries OpenCV for the stream's resolution and FPS, then updates the `cameras` row:
+
+```python
+supabase.table("cameras").update({
+    "stream_info": {"width": w, "height": h, "fps": fps, "codec": codec},
+    "is_online": True,
+}).eq("id", camera_id).execute()
+```
+
+This is what the dashboard uses to render the preview tile sizes correctly without probing each camera.
+
+---
+
+## 6. AI Worker (Server-side, separate repo)
+
+The face/ANPR ONNX models live in a separate worker process (`ai_worker.py` in the server repo). It listens to Supabase Realtime for `INSERT` events on `detections` where `class_id` indicates a person or vehicle, downloads the JPEG from Storage, runs inference, and writes `face_results` / `anpr_results` rows.
+
+---
+
+## Benefits of This Design
+
+- **Cost**: No public-facing Python web server to host.
+- **Bandwidth**: JPEGs go to Storage directly, not as base64 inside JSON.
+- **Resilience**: Supabase Realtime replaces custom SSE with a managed WebSocket layer.
+- **Security**: JWT + RLS replaces a custom bcrypt API-key scheme.

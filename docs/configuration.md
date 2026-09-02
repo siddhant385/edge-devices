@@ -1,74 +1,75 @@
 # Configuration Reference
 
-The edge AI pipeline uses environment variables (or `.env` files) as its primary configuration source, supplemented by real-time settings pushed from the central server. The configuration applies to everything from camera ingestion to local model inference and HTTP sending.
+The edge AI pipeline reads configuration from two sources:
+
+1. **Environment variables** (`.env`) for device-wide settings (Supabase credentials, model path, retry timings).
+2. **Per-camera JSON files** in `cameras/` for camera-specific settings (RTSP URL, plugins, polygon, line, etc.).
+
+Runtime overrides can be pushed by the server via Supabase Realtime (`device_settings` table) for a curated allow-list of fields.
 
 ## Environment Variables
 
 | Variable | Default | Description |
 |---|---|---|
-| `DEVICE_ID` | `edge-device-unknown` | Unique identifier for this physical edge device. |
-| `CAMERA_ID` | `camera-unknown` | Identifier for the single camera when `CAMERAS` is not set. |
-| `CAMERA_SOURCE` | (empty string) | RTSP URL or device index (e.g. `0`) for the single camera when `CAMERAS` is not set. |
-| `CAMERAS` | (unset) | JSON array overriding single camera config (see CAMERAS JSON). |
-| `API_URL` | (required) | Central server endpoint where alert JSON payloads are posted. |
-| `API_KEY` | (unset) | Optional bearer token sent in the `Authorization` header. |
-| `MODEL_PATH` | `models/yolo26n.onnx` | Path to the `.onnx` inference model file. |
-| `QUEUE_PATH` | `data/outbox.jsonl` | Local file used for the durable offline queue. |
-| `PROCESS_EVERY_N_FRAMES` | `5` | Skips frames to reduce CPU load (e.g., `5` means process 1 out of 5 frames). |
-| `INFERENCE_SIZE` | `640` | Resize resolution dimension for the vision model (must be >= 32). |
-| `CONFIDENCE_THRESHOLD` | `0.45` | Minimum confidence score (0.0 to 1.0) to retain a detection. |
-| `NMS_THRESHOLD` | `0.5` | Non-maximum suppression IoU threshold (0.0 to 1.0) for overlapping bounding boxes. |
-| `TARGET_CLASS_IDS` | `0,2,3,5,7` | Comma-separated list of COCO class IDs (e.g. `0`=person) to detect. |
-| `RECONNECT_DELAY_SECONDS` | `3.0` | Delay before attempting to reconnect to a dropped camera stream. |
-| `REQUEST_TIMEOUT_SECONDS` | `5.0` | Timeout for `POST`ing alert payloads to the `API_URL`. |
-| `QUEUE_MAX_RECORDS` | `1000` | Maximum number of alert JSON lines to store offline before dropping the oldest. |
-| `SEND_EMPTY_DETECTIONS` | `false` | If true, sends alert payloads even when no target objects are detected. |
-| `SHOW_PREVIEW` | `false` | Displays an annotated OpenCV window (requires desktop environment). Use `false` with multiple cameras. |
-| `ENABLE_SENDING` | `true` | If false, processes frames and updates preview but drops all alerts instead of sending them. |
-| `ENABLED_PLUGINS` | `object_detection` | Comma-separated list of plugin modules to run in sequence. |
-| `INTRUSION_ZONE_POLYGON` | (empty) | JSON array of `[x, y]` points for the `intrusion_detection` plugin zone. |
-| `VIRTUAL_BORDER_LINE` | (empty) | JSON array of exactly two `[x, y]` points for the `virtual_border` plugin. |
-| `EVIDENCE_SOURCE_FEATURE` | `object_detection` | Target feature event for the `evidence_capture` plugin to attach cropped JPEGs to. |
-| `EVIDENCE_MAX_WIDTH` | `1280` | Maximum pixel width for evidence JPEGs. Preserves aspect ratio. |
-| `EVIDENCE_JPEG_QUALITY` | `75` | JPEG quality score (1-95) for evidence images. |
-| `CONTROL_URL` | (unset) | Central server Server-Sent Events (SSE) endpoint for live setting updates. |
-| `CONTROL_RECONNECT_SECONDS` | `5.0` | Delay before retrying an SSE connection after a failure. |
-| `HEARTBEAT_URL` | (unset) | Central server endpoint to `POST` device health metrics. |
-| `HEARTBEAT_INTERVAL_SECONDS` | `60.0` | Interval between health metric posts. |
+| `DEVICE_ID` | `edge-device-unknown` | The device's slug (e.g. `edge-border-north-1`). Must match the `device_id` column in `devices`. |
+| `SUPABASE_URL` | (required) | Your project URL, e.g. `https://abc.supabase.co`. |
+| `API_KEY` | (required) | Supabase anon/publishable key. |
+| `DEVICE_EMAIL` | (required) | Virtual email used for `sign_in_with_password` (e.g. `edge-001@devices.ibvap.internal`). |
+| `DEVICE_PASSWORD` | (required) | Password provisioned when the device was registered. |
+| `API_URL` | `dummy` | Legacy FastAPI endpoint. No longer used; left for backward compatibility. |
+| `MODEL_PATH` | `models/yolo26n.onnx` | Path to the ONNX model file. |
+| `QUEUE_PATH` | `data/outbox.jsonl` | Local durable outbox file. |
+| `RECONNECT_DELAY_SECONDS` | `3` | Delay before reconnecting to a dropped RTSP stream. |
+| `REQUEST_TIMEOUT_SECONDS` | `5` | HTTP timeout for outgoing Supabase calls. |
+| `QUEUE_MAX_RECORDS` | `1000` | Max outbox rows before oldest are dropped (FIFO). |
+| `SEND_EMPTY_DETECTIONS` | `false` | If true, send alerts even when no objects were detected. |
+| `SHOW_PREVIEW` | `false` | Display annotated OpenCV window. Press `Q` or `Esc` to stop. |
+| `ENABLE_SENDING` | `true` | If false, run inference locally but never POST to Supabase. |
+| `CONTROL_RECONNECT_SECONDS` | `5` | Delay before resubscribing to Supabase Realtime after a drop. |
+| `HEARTBEAT_INTERVAL_SECONDS` | `60` | Interval between device-online pings. Must be ≥ 10. |
 
-## CAMERAS JSON Configuration
+## Per-Camera JSON (`cameras/*.json`)
 
-When processing multiple cameras concurrently, use the `CAMERAS` environment variable containing a JSON array. Each object requires an `id` and `source` string:
+Each file describes one camera. Filename does not need to match `id`. Required keys: `id`, `source`. All other keys have defaults.
 
 ```json
-[
-  {
-    "id": "gate-1-cam",
-    "source": "rtsp://192.168.1.100:554/stream"
-  },
-  {
-    "id": "gate-2-cam",
-    "source": "rtsp://192.168.1.101:554/stream"
-  }
-]
+{
+  "id": "496b6c20-5fa2-4932-a934-463da216d706",
+  "source": "rtsp://user:pass@192.168.1.100:8554/stream",
+  "process_every_n_frames": 5,
+  "inference_size": 640,
+  "confidence_threshold": 0.45,
+  "nms_threshold": 0.5,
+  "target_class_ids": [0],
+  "enabled_plugins": ["object_detection", "object_tracking", "virtual_border", "evidence_capture"],
+  "intrusion_zone_polygon": [[100, 100], [1180, 100], [1180, 620], [100, 620]],
+  "virtual_border_line": [[0.38, 0.57], [0.71, 0.36]],
+  "evidence_source_feature": "virtual_border",
+  "evidence_max_width": 1280,
+  "evidence_jpeg_quality": 75
+}
 ```
 
-When `CAMERAS` is defined, `CAMERA_ID` and `CAMERA_SOURCE` are ignored, and `SHOW_PREVIEW` cannot be `true`.
+Notes:
 
-## Remote Settings List
+- `virtual_border_line` and `intrusion_zone_polygon` accept **normalized coordinates in `[0.0, 1.0]`**. They are scaled to the actual frame resolution on first frame. Absolute pixel coordinates also work but only at the configured resolution.
+- `target_class_ids` is a JSON array of COCO class indices (e.g. `0` for person, `2` for car, `7` for truck). Defaults to `[0]` if omitted.
+- `enabled_plugins` accepts the built-in names listed below. `object_detection` and `object_tracking` are auto-loaded when spatial plugins are enabled, so you don't need to list them explicitly.
 
-A central server connected via the `CONTROL_URL` SSE endpoint can dynamically push updates that override local configuration for the following specific settings (other local settings like device IDs, paths, or URLs remain unalterable):
+## Remote Settings (Hot Reload)
 
-*   `process_every_n_frames` (integer)
-*   `confidence_threshold` (float)
-*   `nms_threshold` (float)
-*   `target_class_ids` (array of integers)
-*   `send_empty_detections` (boolean)
-*   `enabled_plugins` (array of strings, e.g., `["object_detection", "object_tracking"]`)
-*   `intrusion_zone_polygon` (array of `[x,y]` coordinates)
-*   `evidence_source_feature` (string)
-*   `evidence_max_width` (integer)
-*   `evidence_jpeg_quality` (integer)
-*   `virtual_border_line` (array of two `[x,y]` coordinates or `null`)
+The server can push updates to these fields through Supabase Realtime (`device_settings` table). Anything outside this list is rejected client-side.
 
-The edge validates all incoming payloads and will ignore configuration changes that contain invalid inputs or attempt to update local-only configuration fields.
+- `process_every_n_frames` (int)
+- `inference_size` (int, ≥ 32)
+- `confidence_threshold` (float, 0.0–1.0)
+- `nms_threshold` (float, 0.0–1.0)
+- `target_class_ids` (array of int)
+- `enabled_plugins` (array of plugin names)
+- `intrusion_zone_polygon` (array of `[x, y]`)
+- `virtual_border_line` (two `[x, y]` points or `null`)
+- `evidence_source_feature` (string)
+- `evidence_max_width` (int, ≥ 32)
+- `evidence_jpeg_quality` (int, 1–95)
+
+On every successful push, `ControlReceiver` rebuilds the affected `PluginManager` instance so the new thresholds/zones take effect without restarting the camera loop.

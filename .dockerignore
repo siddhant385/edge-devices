@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Build artifacts
+dist/
+build/
+*.spec
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Documentation (kept outside container)
+*.md
+docs/
+
+# Local config and secrets
+.env
+.env.*
+!.env.example
+data/
+logs/
+
+# Media (large binaries not needed in image)
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+models/*.onnx
+models/*.pt
+models/*.rknn
+
+# Docker itself
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Project-specific runtime files
+install_termux.sh

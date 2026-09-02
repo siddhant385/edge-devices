@@ -1,50 +1,59 @@
 # Resilience and Error Handling
 
-Border deployments suffer from frequent network outages, power fluctuations, and temporary camera disconnects. The edge pipeline is built to handle these autonomously without crashing or losing critical event data.
+Border deployments suffer from frequent network outages, power fluctuations, and temporary camera disconnects. The edge pipeline handles these autonomously without crashing or losing critical event data.
 
-## 1. Offline Alert Queue (`core.sender.Sender`)
+## 1. Offline Alert Queue (`core/cloud/sender.py`)
 
-If the central server (`API_URL`) is unreachable (HTTP timeout, DNS failure, 5xx error), the sender degrades gracefully.
+If Supabase is unreachable (timeout, DNS failure, 5xx), `AlertSender` degrades gracefully.
 
 **Durable Storage:**
-*   Alert payloads are immediately appended to a local JSON Lines file (`QUEUE_PATH`, default: `data/outbox.jsonl`).
-*   This file is durable across sudden power loss (though pending OS buffers may be lost).
-*   Storage is capped at `QUEUE_MAX_RECORDS` to prevent filling the SD card/eMMC. If full, the oldest records are dropped (FIFO).
+- Alert payloads are appended to `data/outbox.jsonl` (path configurable via `QUEUE_PATH`).
+- The file is fsync'd after each write to survive sudden power loss.
+- Storage is capped at `QUEUE_MAX_RECORDS` (default 1000). If full, the oldest records are dropped (FIFO) and a warning is logged.
 
 **Burst Replay:**
-*   On every tick, the sender checks the network.
-*   If online, it sequentially drains the `outbox.jsonl` file, `POST`ing older alerts.
-*   The server must rely on the payload's original `timestamp`, *not* the receipt time, for accurate event logging.
+- On each send tick, the sender checks network availability.
+- If online, it drains the outbox, `POST`ing older alerts first.
+- The Supabase row's `timestamp` reflects the original event time, not the receipt time.
 
-## 2. Camera Reconnection (`core.receiver.Receiver`)
+**Per-tracker debounce (sender-side):**
+- `AlertSender` keeps a 5 s cooldown map keyed by `tracker_id` to prevent storms when multiple plugins emit for the same object in the same frame.
+
+**Per-tracker evidence debounce (plugin-side):**
+- `EvidenceCapturePlugin` keeps a 30 s cooldown keyed by `tracker_id`, with a 3600 px² minimum bbox. This ensures one JPEG per object per 30 s rather than one per frame.
+
+## 2. Camera Reconnection (`core/ai/receiver.py`)
 
 RTSP streams over wireless PtP links often stutter or drop.
 
 **Isolation:**
-*   Each camera runs in its own thread. If `gate-1-cam` drops, `gate-2-cam` continues processing flawlessly.
-*   The main thread continues to spin. If no frames are available for a camera, it simply skips processing that camera for the current loop.
+- Each camera runs `CameraReceiver` in its own background `threading.Thread`.
+- `main.py` runs one `asyncio` task per camera; the asyncio task pulls from the receiver's `queue.Queue` via `asyncio.to_thread`. A dropped camera only affects its own queue.
+- The main process keeps running and serving other cameras.
 
 **Retry Logic:**
-*   If `cv2.VideoCapture.read()` returns `False` or raises an exception, the thread releases the resource.
-*   It sleeps for `RECONNECT_DELAY_SECONDS`.
-*   It attempts to re-initialize the connection. This loop repeats indefinitely until the stream recovers.
+- If `cv2.VideoCapture.read()` returns `False` or raises, the thread releases the capture object, sleeps for `RECONNECT_DELAY_SECONDS` (default 3 s), and re-opens.
+- `OPENCV_FFMPEG_CAPTURE_OPTIONS=rtsp_transport;udp|timeout;2000000` is set globally to use UDP with a 2 s timeout for RTSP — TCP fallback is automatic in OpenCV's FFmpeg backend if UDP fails.
 
-## 3. SSE Retry & Recovery
+## 3. Supabase Realtime Reconnect (`core/cloud/control_receiver.py`)
 
-The Server-Sent Events control connection (`CONTROL_URL`) is susceptible to idle timeouts or network drops.
+The Realtime WebSocket subscription carries server-pushed setting changes. It is the modern equivalent of the old SSE listener.
 
 **Auto-Reconnect:**
-*   The SSE background thread catches `requests.exceptions.RequestException`.
-*   It logs the disconnect, sleeps for `CONTROL_RECONNECT_SECONDS`, and opens a new stream.
-*   The edge pipeline always runs locally, so the main processing loop is unaffected by SSE connection loss. It simply continues using the last known configuration settings.
+- The supabase-py async client handles WebSocket reconnection internally with exponential backoff.
+- If the subscription drops, `ControlReceiver.start` retries after `CONTROL_RECONNECT_SECONDS` (default 5 s).
+- The pipeline always runs locally; settings simply stay frozen at the last known value until the next successful push.
 
-## 4. Hardware Monitoring (Heartbeat)
+## 4. Authentication and Token Refresh
 
-If `HEARTBEAT_URL` is configured, the system proactively reports its state to the server. This is critical for detecting silent failures (e.g., thermal throttling before a hard crash, or an SD card filling up).
+- On boot, `main.py` calls `supabase.auth.sign_in_with_password(DEVICE_EMAIL, DEVICE_PASSWORD)`.
+- The returned JWT is attached to every Supabase REST and Storage request.
+- The supabase-py async client auto-refreshes the JWT before expiry; no manual token rotation is required.
+- If authentication fails, the pipeline aborts with a clear error — there is no anonymous fallback because RLS would block all writes anyway.
 
-The heartbeat thread reports:
-*   CPU load (`psutil.cpu_percent`)
-*   Memory usage (`psutil.virtual_memory().percent`)
-*   Temperature (`/sys/class/thermal/thermal_zone0/temp` where supported)
-*   Queue Depth (Lines in `outbox.jsonl`)
-*   Active Cameras (Cameras currently returning valid frames).
+## 5. Hardware Monitoring
+
+Device liveness is communicated by updating the `devices.is_online` and `devices.last_seen_at` columns on a periodic tick. There is no separate heartbeat table; the operator dashboard reads `is_online` directly.
+
+- `HEARTBEAT_INTERVAL_SECONDS` controls the cadence (default 60 s, minimum 10 s).
+- A row older than the threshold is treated as offline by the dashboard's own logic — no Postgres cron is required.

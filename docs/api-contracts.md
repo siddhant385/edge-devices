@@ -1,93 +1,101 @@
 # API Contracts
 
-This document outlines the standard JSON payloads exchanged between the edge AI pipeline and the central server.
+This document describes the JSON payloads exchanged between the edge AI pipeline and the central Supabase project. Authentication is JWT-based (issued via `supabase.auth.sign_in_with_password`); RLS policies on each table enforce authorization.
 
-## 1. Alert Payload (Edge -> Server)
+## 1. Detection Insert (Edge → Supabase)
 
-When actionable features are detected, the edge sends an alert payload to `API_URL`.
+When any enabled plugin emits detections, `AlertSender` (`core/cloud/sender.py`) inserts one row per bounding box into the `detections` table via PostgREST.
 
-**Method:** `POST`
-**Headers:** `Authorization: Bearer <API_KEY>`, `Content-Type: application/json`
+**Table:** `public.detections`
+**Method:** `POST /rest/v1/detections?select=id,...`
+**Headers:** `Authorization: Bearer <JWT>`, `apikey: <anon_key>`, `Content-Type: application/json`, `Prefer: return=representation`
 
-**Example Payload:**
+**Row shape (one per detection):**
 
 ```json
 {
-  "device_id": "edge-001",
-  "camera_id": "gate-1-cam",
-  "timestamp": "2023-10-27T10:15:30.123456Z",
-  "frame_sequence": 1450,
-  "features": [
-    {
-      "type": "object_detection",
-      "data": {
-        "class_id": [0, 2],
-        "confidence": [0.89, 0.76],
-        "xyxy": [
-          [100.0, 150.0, 200.0, 300.0],
-          [400.0, 200.0, 500.0, 400.0]
-        ],
-        "tracker_id": null
-      },
-      "metadata": {},
-      "evidence": "/9j/4AAQSkZJRgABAQ..."
-    },
-    {
-      "type": "virtual_border_crossing",
-      "data": {
-         "class_id": [0],
-         "confidence": [0.89],
-         "xyxy": [[100.0, 150.0, 200.0, 300.0]],
-         "tracker_id": [42]
-      },
-      "metadata": {"crossed_direction": "in"},
-      "evidence": null
-    }
-  ]
+  "device_id": "<uuid>",
+  "camera_id": "<uuid>",
+  "timestamp": "2026-09-03T01:53:54.144+00:00",
+  "feature": "virtual_border",
+  "class_id": 0,
+  "class_name": "person",
+  "confidence": 0.8743,
+  "bbox_xyxy": [320.5, 110.2, 410.0, 480.7],
+  "tracker_id": 5,
+  "evidence_path": "edge-001/<cam-uuid>/2026-09-03/<uuid>.jpg"
 }
 ```
 
-*   `features[].data`: A dictionary representation of a Roboflow `sv.Detections` object. Arrays align by index.
-*   `features[].evidence`: A base64-encoded JPEG image string, or `null`.
+Only the first detection row in a batch carries `evidence_path`; subsequent rows in the same event reference the same path implicitly via `tracker_id` lookup.
 
-## 2. Heartbeat Payload (Edge -> Server)
+## 2. Evidence Upload (Edge → Supabase Storage)
 
-The edge sends periodic health metrics to `HEARTBEAT_URL` if configured.
+JPEG blobs go straight to the `evidence` bucket without base64 wrapping.
 
-**Method:** `POST`
-**Headers:** `Authorization: Bearer <API_KEY>`, `Content-Type: application/json`
+**Bucket:** `evidence`
+**Method:** `POST /storage/v1/object/evidence/<path>`
+**Headers:** `Authorization: Bearer <JWT>`, `Content-Type: image/jpeg`
 
-**Example Payload:**
+**Path format:** `<device_id>/<camera_id>/<YYYY-MM-DD>/<uuid>.jpg`
+
+The JPEG is downscaled to `evidence_max_width` (default 1280) with `INTER_AREA` and encoded at `evidence_jpeg_quality` (default 75) by `EvidenceCapturePlugin._encode` (`plugins/evidence_capture.py`).
+
+## 3. Alert Insert (Edge → Supabase)
+
+For spatial features (`virtual_border`, `intrusion_detection`) with attached evidence, the sender also inserts a row into `alerts`.
+
+**Table:** `public.alerts`
+**Method:** `POST /rest/v1/alerts`
+**Headers:** same as detections
 
 ```json
 {
-  "device_id": "edge-001",
-  "timestamp": "2023-10-27T10:15:30.123456Z",
-  "metrics": {
-    "cpu_percent": 45.2,
-    "memory_percent": 62.1,
-    "temperature_c": 58.5,
-    "queue_depth": 14,
-    "active_cameras": ["gate-1-cam", "gate-2-cam"]
+  "device_id": "<uuid>",
+  "camera_id": "<uuid>",
+  "timestamp": "2026-09-03T01:53:54.144+00:00",
+  "detection_id": "<uuid of detections row>",
+  "evidence_path": "edge-001/<cam-uuid>/2026-09-03/<uuid>.jpg",
+  "has_evidence": true,
+  "severity": "critical",
+  "status": "unacknowledged",
+  "raw_payload": {
+    "feature": "virtual_border",
+    "class_name": "person",
+    "confidence": 0.8743,
+    "tracker_id": 5,
+    "bbox_xyxy": [320.5, 110.2, 410.0, 480.7]
   }
 }
 ```
 
-*   `temperature_c`: Read from `/sys/class/thermal/thermal_zone0/temp` (Linux only). Returns `0.0` if unavailable.
+Severity is `critical` for any spatial event with evidence; the AI worker can escalate further on watchlist matches.
 
-## 3. SSE Protocol Payload (Server -> Edge)
+## 4. Real-time Configuration Push (Server → Edge)
 
-The central server pushes live configuration updates to the edge via the Server-Sent Events endpoint (`CONTROL_URL`).
+The server updates `public.device_settings` for this device. A Supabase Realtime subscription on the edge (`ControlReceiver`) receives the new row, validates the keys against `REMOTE_SETTING_NAMES`, and applies them via `apply_remote_camera_settings`. The change is propagated to the live `PluginManager` on the next camera loop tick.
 
-**Method:** `GET`
-**Headers:** `Authorization: Bearer <API_KEY>`, `Accept: text/event-stream`
+**Channel:** Postgres changes on `public.device_settings` filtered by `device_id=eq.<device_text_id>`.
 
-**Example Event Stream:**
+**Push payload (server side, for reference):**
 
-```text
-event: settings
-data: {"version": "v1.2", "settings": {"confidence_threshold": 0.6, "process_every_n_frames": 10}}
+```json
+{
+  "version": "v1.2",
+  "settings": {
+    "confidence_threshold": 0.6,
+    "process_every_n_frames": 10,
+    "virtual_border_line": [[0.4, 0.5], [0.6, 0.5]]
+  }
+}
 ```
 
-*   The edge only processes events named `settings`.
-*   The JSON payload in `data` must contain a `settings` object mapping valid remote configuration keys to their new values. Any omitted keys retain their local values.
+Any keys outside the allow-list are silently ignored.
+
+## 5. Commands (Server → Edge)
+
+The server inserts rows into `public.device_commands` with `command='snapshot'` or similar. `CommandExecutor` (`core/cloud/command_executor.py`) processes them and writes back to `result`.
+
+## 6. Heartbeat
+
+`is_online` and `last_seen_at` on the `devices` row are updated periodically. There is no separate heartbeat table.

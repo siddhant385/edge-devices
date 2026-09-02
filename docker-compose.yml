@@ -1,0 +1,47 @@
+# IBVAP Edge Client - Multi-camera deployment example.
+#
+# Usage:
+#   1. Copy .env.example to .env and fill in Supabase credentials.
+#   2. Place camera JSON configs under ./cameras/.
+#   3. Place the ONNX model under ./models/.
+#   4. docker compose up -d
+#   5. docker compose logs -f
+
+services:
+  edge:
+    build: .
+    image: ibvap-edge:latest
+    container_name: ibvap-edge
+    restart: unless-stopped
+    network_mode: host  # Required for low-latency RTSP and Supabase Realtime WebSockets.
+    env_file:
+      - .env
+    environment:
+      # Allow disabling the OpenCV preview window when SHOW_PREVIEW is true
+      # (xvfb would be required for headless preview; left disabled).
+      QT_QPA_PLATFORM: offscreen
+    volumes:
+      - ./cameras:/app/cameras:ro
+      - ./models:/app/models:ro
+      - edge-data:/app/data
+      - edge-logs:/app/logs
+    # Resource caps - tune for your device. Two cameras + ONNX CPU typically
+    # uses 1-2 cores and ~600 MB RAM.
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+        reservations:
+          cpus: "1.0"
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "python main.py"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  edge-data:
+  edge-logs:
