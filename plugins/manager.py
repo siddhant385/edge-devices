@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 from datetime import UTC, datetime
 
+import numpy as np
 import supervision as sv
 
 from config.camera_settings import CameraSettings
@@ -35,11 +36,12 @@ class PluginManager:
         plugins_to_load = set(settings.enabled_plugins)
         
         # 2. Dependency Management:
-        # Spatial plugins REQUIRE object detection (and sometimes tracking) to function.
+        # Spatial plugins REQUIRE object detection and tracking to function.
         # We silently load them to do the math, even if the user didn't ask for their events.
         requires_detection = {"virtual_border", "intrusion_detection", "object_tracking"}
         if requires_detection.intersection(plugins_to_load):
             plugins_to_load.add("object_detection")
+            plugins_to_load.add("object_tracking")
 
         # 3. Ensure strict execution order (Detection MUST run before Border/Intrusion)
         execution_order = [
@@ -65,19 +67,26 @@ class PluginManager:
             captured_at=datetime.now(UTC),
             detections=sv.Detections.empty(),
         )
-        
+
         for spec, plugin in self._plugins:
             # The plugin runs and does its math (populating context.detections)
             plugin_events = plugin.process(context)
-            
+
             # --- EVENT FILTERING ---
             # Only keep the events if this plugin was EXPLICITLY enabled in settings.
             # If it was silently loaded as a dependency (like object_detection for virtual_border),
             # its events are dropped!
             if spec in self.settings.enabled_plugins:
                 context.events.extend(plugin_events)
-                
+
         return context.detections, context.events
+
+    def annotate_preview(self, scene) -> "np.ndarray":
+        for _, plugin in self._plugins:
+            annotate = getattr(plugin, "annotate_preview", None)
+            if callable(annotate):
+                scene = annotate(scene)
+        return scene
 
     @staticmethod
     def _load(plugin_spec: str, settings: CameraSettings, services: PluginServices) -> VisionPlugin:

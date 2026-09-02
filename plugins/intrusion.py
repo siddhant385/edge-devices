@@ -74,3 +74,8 @@ class IntrusionDetectionPlugin:
             return [FeatureEvent(self.name, intruders)]
 
         return []
+
+    def annotate_preview(self, scene: np.ndarray) -> np.ndarray:
+        h, w = scene.shape[:2]
+        zone = self._ensure_zone(h, w)
+        return sv.PolygonZoneAnnotator().annotate(scene, zone)

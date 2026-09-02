@@ -230,7 +230,8 @@ async def run_camera_async(
                         )
 
                     cv2.imshow(
-                        f"IBVAP {camera.camera_id} - press Q or Esc to quit", preview
+                        f"IBVAP {camera.camera_id} - press Q or Esc to quit",
+                        plugins.annotate_preview(preview),
                     )
                     if cv2.waitKey(1) & 0xFF in (ord("q"), 27):
                         stop.set()

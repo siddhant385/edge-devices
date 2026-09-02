@@ -60,7 +60,7 @@ def _polygon(value: str | list | None) -> tuple[tuple[int, int], ...]:
     return tuple((int(point[0]), int(point[1])) for point in points)
 
 
-def _border_line(value: str | list | None) -> tuple[int, int, int, int] | None:
+def _border_line(value: str | list | None) -> tuple[float, float, float, float] | None:
     if not value:
         return None
     points = json.loads(value) if isinstance(value, str) else value
@@ -68,7 +68,12 @@ def _border_line(value: str | list | None) -> tuple[int, int, int, int] | None:
         raise ValueError(
             "virtual_border_line must be a JSON array of two [x, y] points"
         )
-    return (int(points[0][0]), int(points[0][1]), int(points[1][0]), int(points[1][1]))
+    return (
+        float(points[0][0]),
+        float(points[0][1]),
+        float(points[1][0]),
+        float(points[1][1]),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,7 +89,7 @@ class CameraSettings:
     target_class_ids: frozenset[int] = frozenset({0})
     enabled_plugins: tuple[str, ...] = ("object_detection", "evidence_capture")
     intrusion_zone_polygon: tuple[tuple[int, int], ...] = ()
-    virtual_border_line: tuple[int, int, int, int] | None = None
+    virtual_border_line: tuple[float, float, float, float] | None = None
     evidence_source_feature: str = "object_detection"
     evidence_max_width: int = 1280
     evidence_jpeg_quality: int = 75

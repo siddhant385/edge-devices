@@ -74,7 +74,7 @@ class CameraReceiver:
     def frames(self) -> Iterator[np.ndarray]:
         """Deprecated. Use asynchronous fetching from _frame_queue instead."""
         self.start()
-        
+
         while not self._stop_event.is_set():
             try:
                 frame = self._frame_queue.get(timeout=1.0)
@@ -86,7 +86,9 @@ class CameraReceiver:
         """Start the background reading thread."""
         self._stop_event.clear()
         if self._reader_thread is None or not self._reader_thread.is_alive():
-            self._reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
+            self._reader_thread = threading.Thread(
+                target=self._reader_loop, daemon=True
+            )
             self._reader_thread.start()
 
     def _close_capture(self) -> None:

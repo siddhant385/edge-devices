@@ -17,6 +17,8 @@ from supabase._async.client import AsyncClient as AsyncSupabaseClient
 
 from plugins.base import FeatureEvent
 
+_HIGH_SEVERITY_FEATURES = frozenset({"virtual_border", "intrusion_detection"})
+
 
 class AlertSender:
     """POST detection batches asynchronously and retain failed payloads for later retry."""
@@ -169,8 +171,52 @@ class AlertSender:
                 })
 
             if detections_to_insert:
-                # logging.debug("[MOCK] function inserted to detections")
-                await self._supabase.table("detections").insert(detections_to_insert).execute()
+                insert_response = (
+                    await self._supabase.table("detections")
+                    .insert(detections_to_insert)
+                    .execute()
+                )
+
+                # 4. Create high-severity alerts for spatial events with evidence
+                inserted = getattr(insert_response, "data", None) or []
+                alerts_to_insert = []
+                for row, payload in zip(inserted, detections_to_insert):
+                    feature = payload.get("feature")
+                    if feature not in _HIGH_SEVERITY_FEATURES:
+                        continue
+                    if not payload.get("evidence_path"):
+                        continue
+                    alerts_to_insert.append(
+                        {
+                            "device_id": payload["device_id"],
+                            "camera_id": payload["camera_id"],
+                            "timestamp": payload.get("timestamp"),
+                            "detection_id": row.get("id"),
+                            "evidence_path": payload["evidence_path"],
+                            "has_evidence": True,
+                            "severity": "critical",
+                            "status": "unacknowledged",
+                            "raw_payload": {
+                                "feature": feature,
+                                "class_name": payload.get("class_name"),
+                                "confidence": payload.get("confidence"),
+                                "tracker_id": payload.get("tracker_id"),
+                                "bbox_xyxy": payload.get("bbox_xyxy"),
+                            },
+                        }
+                    )
+
+                if alerts_to_insert:
+                    try:
+                        await self._supabase.table("alerts").insert(
+                            alerts_to_insert
+                        ).execute()
+                    except Exception as alert_error:
+                        logging.warning(
+                            "Alert creation failed: %s (Type: %s)",
+                            alert_error,
+                            type(alert_error).__name__,
+                        )
 
             return True
 

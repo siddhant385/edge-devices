@@ -22,3 +22,10 @@ models/*.pt
 # Temporary files
 *.tmp
 *.bak
+
+# Video / media files
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
