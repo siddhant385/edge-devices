@@ -26,11 +26,11 @@
     "evidence_source_feature": "object_detection",
     "evidence_max_width": 1280,
     "evidence_jpeg_quality": 75,
-    "latitude": null,
-    "longitude": null,
+    "latitude": 30.85,
+    "longitude": 72.345,
     "cooldown_seconds": 5.0,
     "severity": "critical",
     "zones": [],
     "zone_id_map": {},
-    "location": null
+    "location": "Post 30\u00b051'00\"N 72\u00b020'42\"E"
 }
