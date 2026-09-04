@@ -15,15 +15,22 @@
     "intrusion_zone_polygon": [],
     "virtual_border_line": [
         [
-            0.38226108682073706,
-            0.5705555555555556
+            0.14081145584725538,
+            0.6348448687350835
         ],
         [
-            0.707682698313554,
-            0.3572222222222222
+            0.7573587907716786,
+            0.636038186157518
         ]
     ],
     "evidence_source_feature": "object_detection",
     "evidence_max_width": 1280,
-    "evidence_jpeg_quality": 75
+    "evidence_jpeg_quality": 75,
+    "latitude": null,
+    "longitude": null,
+    "cooldown_seconds": 5.0,
+    "severity": "critical",
+    "zones": [],
+    "zone_id_map": {},
+    "location": null
 }

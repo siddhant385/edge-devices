@@ -23,11 +23,10 @@ class DeviceSettings:
     enable_sending: bool
     control_url: str | None
     control_reconnect_seconds: float
-    heartbeat_url: str | None
-    heartbeat_interval_seconds: float
     supabase_url: str
     device_email: str
     device_password: str
+    location: str | None
 
     @classmethod
     def from_environment(cls) -> "DeviceSettings":
@@ -51,11 +50,10 @@ class DeviceSettings:
             enable_sending=os.getenv("ENABLE_SENDING", "true").lower() == "true",
             control_url=os.getenv("CONTROL_URL") or None,
             control_reconnect_seconds=float(os.getenv("CONTROL_RECONNECT_SECONDS", "5")),
-            heartbeat_url=os.getenv("HEARTBEAT_URL") or None,
-            heartbeat_interval_seconds=float(os.getenv("HEARTBEAT_INTERVAL_SECONDS", "60")),
             supabase_url=os.getenv("SUPABASE_URL", ""),
             device_email=os.getenv("DEVICE_EMAIL", ""),
             device_password=os.getenv("DEVICE_PASSWORD", ""),
+            location=os.getenv("DEVICE_LOCATION") or None,
         )
         if not settings.supabase_url:
             raise ValueError("SUPABASE_URL must be set")
@@ -65,6 +63,4 @@ class DeviceSettings:
             raise ValueError("DEVICE_PASSWORD must be set")
         if settings.control_reconnect_seconds < 1:
             raise ValueError("CONTROL_RECONNECT_SECONDS must be at least 1")
-        if settings.heartbeat_interval_seconds < 10:
-            raise ValueError("HEARTBEAT_INTERVAL_SECONDS must be at least 10")
         return settings

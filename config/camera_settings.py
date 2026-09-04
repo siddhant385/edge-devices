@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
+from typing import NamedTuple
 
 REMOTE_PLUGIN_NAMES = frozenset(
     {
@@ -27,14 +28,42 @@ REMOTE_SETTING_NAMES = frozenset(
         "evidence_max_width",
         "evidence_jpeg_quality",
         "virtual_border_line",
+        "latitude",
+        "longitude",
+        "cooldown_seconds",
+        "severity",
+        "zones",
+        "zone_id_map",
+        "location",
     }
 )
+
+
+class NamedZone(NamedTuple):
+    """One named intrusion zone for a camera.
+
+    `polygon` uses normalized (0..1) coordinates by convention; the intrusion
+    plugin scales it to the actual frame resolution on first use. Pass absolute
+    pixel coords if you want - the plugin auto-detects on first frame
+    (any coordinate > 1.0 is treated as absolute).
+    """
+
+    name: str
+    polygon: tuple[tuple[float, float], ...]
+    target_class_ids: tuple[int, ...] = (0,)
+    min_count: int = 1
 
 
 def _class_ids(value: str | list[int]) -> frozenset[int]:
     if isinstance(value, list):
         return frozenset(value)
     return frozenset(int(item.strip()) for item in value.split(",") if item.strip())
+
+
+def _opt_float(value: object) -> float | None:
+    if value is None or value == "":
+        return None
+    return float(value)
 
 
 def _plugins(value: str | list[str] | None) -> tuple[str, ...]:
@@ -76,6 +105,46 @@ def _border_line(value: str | list | None) -> tuple[float, float, float, float] 
     )
 
 
+def _zone(value: dict) -> NamedZone:
+    name = value.get("name")
+    if not isinstance(name, str) or not name:
+        raise ValueError("zone.name must be a non-empty string")
+    raw_polygon = value.get("polygon")
+    if not isinstance(raw_polygon, list) or len(raw_polygon) < 3:
+        raise ValueError(
+            f"zone '{name}' polygon must be an array of at least three [x, y] points"
+        )
+    polygon = tuple((float(p[0]), float(p[1])) for p in raw_polygon)
+    target = value.get("target_class_ids", (0,))
+    if not isinstance(target, (list, tuple)):
+        raise ValueError(f"zone '{name}' target_class_ids must be an array")
+    target_t = tuple(int(t) for t in target)
+    min_count = int(value.get("min_count", 1))
+    if min_count < 1:
+        raise ValueError(f"zone '{name}' min_count must be >= 1")
+    return NamedZone(name=name, polygon=polygon, target_class_ids=target_t, min_count=min_count)
+
+
+def _zones(value: object) -> tuple[NamedZone, ...]:
+    if not value:
+        return ()
+    if isinstance(value, str):
+        value = json.loads(value)
+    if not isinstance(value, list):
+        raise ValueError("zones must be an array")
+    return tuple(_zone(item) for item in value)
+
+
+def _zone_id_map(value: object) -> dict[str, str]:
+    if not value:
+        return {}
+    if isinstance(value, str):
+        value = json.loads(value)
+    if not isinstance(value, dict):
+        raise ValueError("zone_id_map must be an object")
+    return {str(k): str(v) for k, v in value.items()}
+
+
 @dataclass(frozen=True, slots=True)
 class CameraSettings:
     """Settings for one independently processed camera."""
@@ -93,6 +162,13 @@ class CameraSettings:
     evidence_source_feature: str = "object_detection"
     evidence_max_width: int = 1280
     evidence_jpeg_quality: int = 75
+    latitude: float | None = None
+    longitude: float | None = None
+    cooldown_seconds: float = 5.0
+    severity: str = "critical"
+    zones: tuple[NamedZone, ...] = ()
+    zone_id_map: dict[str, str] = field(default_factory=dict)
+    location: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict) -> "CameraSettings":
@@ -114,6 +190,13 @@ class CameraSettings:
             ),
             evidence_max_width=int(data.get("evidence_max_width", 1280)),
             evidence_jpeg_quality=int(data.get("evidence_jpeg_quality", 75)),
+            latitude=_opt_float(data.get("latitude")),
+            longitude=_opt_float(data.get("longitude")),
+            cooldown_seconds=float(data.get("cooldown_seconds", 5.0)),
+            severity=str(data.get("severity", "critical")),
+            zones=_zones(data.get("zones")),
+            zone_id_map=_zone_id_map(data.get("zone_id_map")),
+            location=(str(data["location"]) if data.get("location") else None),
         )
 
     def to_dict(self) -> dict:
@@ -138,6 +221,21 @@ class CameraSettings:
             "evidence_source_feature": self.evidence_source_feature,
             "evidence_max_width": self.evidence_max_width,
             "evidence_jpeg_quality": self.evidence_jpeg_quality,
+            "latitude": self.latitude,
+            "longitude": self.longitude,
+            "cooldown_seconds": self.cooldown_seconds,
+            "severity": self.severity,
+            "zones": [
+                {
+                    "name": z.name,
+                    "polygon": [list(p) for p in z.polygon],
+                    "target_class_ids": list(z.target_class_ids),
+                    "min_count": z.min_count,
+                }
+                for z in self.zones
+            ],
+            "zone_id_map": dict(self.zone_id_map),
+            "location": self.location,
         }
 
 
@@ -154,6 +252,19 @@ def _validate(settings: CameraSettings) -> CameraSettings:
         raise ValueError("evidence_max_width must be at least 32")
     if not 1 <= settings.evidence_jpeg_quality <= 95:
         raise ValueError("evidence_jpeg_quality must be between 1 and 95")
+    if settings.latitude is not None and not -90.0 <= settings.latitude <= 90.0:
+        raise ValueError("latitude must be between -90 and 90")
+    if settings.longitude is not None and not -180.0 <= settings.longitude <= 180.0:
+        raise ValueError("longitude must be between -180 and 180")
+    if (settings.latitude is None) != (settings.longitude is None):
+        raise ValueError("latitude and longitude must be set together or both omitted")
+    if settings.cooldown_seconds < 0.0:
+        raise ValueError("cooldown_seconds must be >= 0")
+    if settings.severity not in {"info", "warning", "critical"}:
+        raise ValueError("severity must be one of: info, warning, critical")
+    zone_names = [z.name for z in settings.zones]
+    if len(zone_names) != len(set(zone_names)):
+        raise ValueError("zone names must be unique within a camera")
     return settings
 
 
@@ -196,4 +307,18 @@ def apply_remote_camera_settings(
                 updates[name] = None
             else:
                 updates[name] = _border_line(value)
+        elif name in {"latitude", "longitude"}:
+            updates[name] = _opt_float(value)
+        elif name == "cooldown_seconds":
+            updates[name] = float(value)
+        elif name == "severity":
+            if not isinstance(value, str):
+                raise ValueError("severity must be a string")
+            updates[name] = value
+        elif name == "zones":
+            updates[name] = _zones(value)
+        elif name == "zone_id_map":
+            updates[name] = _zone_id_map(value)
+        elif name == "location":
+            updates[name] = (str(value) if value else None)
     return _validate(replace(settings, **updates))

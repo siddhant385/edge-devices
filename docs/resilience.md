@@ -51,9 +51,20 @@ The Realtime WebSocket subscription carries server-pushed setting changes. It is
 - The supabase-py async client auto-refreshes the JWT before expiry; no manual token rotation is required.
 - If authentication fails, the pipeline aborts with a clear error — there is no anonymous fallback because RLS would block all writes anyway.
 
-## 5. Hardware Monitoring
+## 5. Device Liveness via Realtime Presence
 
-Device liveness is communicated by updating the `devices.is_online` and `devices.last_seen_at` columns on a periodic tick. There is no separate heartbeat table; the operator dashboard reads `is_online` directly.
+Device liveness is communicated through a single Supabase Realtime **presence** channel rather than REST polling. The edge opens the channel on the same WebSocket it already uses for control, periodically re-issues `track()`, and writes `devices.last_seen_at` itself from the resulting `presence_sync` event. A pg_cron job (see migration `cron_mark_devices_offline_after_90s`) flips `is_online` to `false` if `last_seen_at` is stale.
 
-- `HEARTBEAT_INTERVAL_SECONDS` controls the cadence (default 60 s, minimum 10 s).
-- A row older than the threshold is treated as offline by the dashboard's own logic — no Postgres cron is required.
+**Edge side (`core/cloud/presence.py`):**
+- On boot, after `sign_in_with_password`, `PresencePublisher.start()` opens channel `device-presence:{device_uuid}` with presence enabled and calls `track({"device_id", "device_uuid", "online_at"})` once.
+- A background task re-`track()`s every `REFRESH_SECONDS` (30 s). Each refresh triggers our own `on_presence_sync` callback, which issues a tiny `update(devices).eq(id, uuid).set(last_seen_at=now, is_online=true)`. This is one REST upsert per 30 s — orders of magnitude cheaper than per-frame polling.
+- The supabase-py realtime client maintains the WebSocket itself (ping/pong, exponential-backoff reconnect).
+- On graceful shutdown, the refresh task is cancelled and `untrack()` is called so the server sees an immediate leave.
+
+**Why the edge writes its own `last_seen_at` instead of a server-side listener:**
+Supabase Realtime presence is an in-memory CRDT inside the Realtime cluster. It is not exposed to Postgres, and there is no mechanism to route presence events to an Edge Function or database trigger. The only consumers of presence events are other WebSocket clients on the same channel. The edge is one of those clients, so it sees its own join/sync events and writes the timestamp itself. This is the canonical Supabase pattern for client-side liveness.
+
+**Offline detection (`cron_mark_devices_offline_after_90s`):**
+- pg_cron job `mark-devices-offline` runs every 30 s: `update devices set is_online = false where is_online = true and last_seen_at < now() - interval '90 seconds'`.
+- 90 s threshold is 3x the 30 s refresh interval — absorbs a single missed refresh and WebSocket jitter without flapping.
+- When the WebSocket dies (power loss, kill -9, network drop), the edge stops calling `track()`, `last_seen_at` goes stale, and the next cron tick flips `is_online` to `false`.
