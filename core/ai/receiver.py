@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import queue
 import threading
@@ -90,6 +91,25 @@ class CameraReceiver:
                 target=self._reader_loop, daemon=True
             )
             self._reader_thread.start()
+
+    @property
+    def capture(self) -> "cv2.VideoCapture | None":
+        """Currently-open VideoCapture, or None when disconnected.
+
+        Public read-only access for the camera loop so it can extract
+        stream metadata when the camera transitions back online.
+        """
+        return self._capture
+
+    async def next_frame(self, timeout_seconds: float = 1.0) -> np.ndarray | None:
+        """Block until a frame is available or the timeout elapses.
+
+        Returns None on timeout; raises on reader-thread errors.
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None, self._frame_queue.get, True, timeout_seconds
+        )
 
     def _close_capture(self) -> None:
         if self._capture is not None:
