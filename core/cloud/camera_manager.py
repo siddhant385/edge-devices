@@ -116,8 +116,15 @@ class CameraManager:
                 cloud_data = settings_resp.data[0]["settings"]
                 if "source" not in cloud_data:
                     cloud_data["source"] = settings.source
+                # The local source URL is operator-chosen and should always
+                # win over the cloud copy. The cloud copy gets written when
+                # the operator uses the dashboard to update camera_settings,
+                # but the local JSON is the source of truth for "where is
+                # this camera physically" - the operator edits the JSON
+                # when they change the camera's network address.
+                cloud_data["source"] = settings.source
                 cloud_data["id"] = true_uuid
-                
+
                 settings = CameraSettings.from_dict(cloud_data)
                 updated_cameras[true_uuid] = settings
                 
