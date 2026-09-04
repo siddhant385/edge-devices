@@ -116,16 +116,15 @@ class CameraManager:
                 cloud_data = settings_resp.data[0]["settings"]
                 if "source" not in cloud_data:
                     cloud_data["source"] = settings.source
-                # The local source URL is operator-chosen and should always
-                # win over the cloud copy. The cloud copy gets written when
-                # the operator uses the dashboard to update camera_settings,
-                # but the local JSON is the source of truth for "where is
-                # this camera physically" - the operator edits the JSON
-                # when they change the camera's network address.
-                cloud_data["source"] = settings.source
-                cloud_data["id"] = true_uuid
-
-                settings = CameraSettings.from_dict(cloud_data)
+                # Field ownership rule: physical fields (source, lat, lon,
+                # location) are set at install time on the edge. The cloud
+                # may store them for display, but it must not push them
+                # back. Only TUNING_FIELDS flow from cloud to edge.
+                from config.camera_settings import TUNING_FIELDS
+                cloud_tuning = {k: v for k, v in cloud_data.items() if k in TUNING_FIELDS}
+                local_dict = settings.to_dict()
+                merged = {**local_dict, **cloud_tuning, "id": true_uuid}
+                settings = CameraSettings.from_dict(merged)
                 updated_cameras[true_uuid] = settings
                 
             # Always save to ensure local reflects True UUID and latest settings

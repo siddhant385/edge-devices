@@ -28,15 +28,28 @@ REMOTE_SETTING_NAMES = frozenset(
         "evidence_max_width",
         "evidence_jpeg_quality",
         "virtual_border_line",
-        "latitude",
-        "longitude",
         "cooldown_seconds",
         "severity",
         "zones",
         "zone_id_map",
-        "location",
     }
 )
+
+# Fields whose owner is the edge device, set at install time in the local
+# camera JSON. The cloud can store values for display but must never push
+# them back - sync_with_cloud() filters them out at merge time. Use this
+# frozenset everywhere you need to distinguish "physical, edge-owned"
+# from "tuning, cloud-pushable".
+PHYSICAL_FIELDS = frozenset(
+    {
+        "source",          # RTSP URL of the camera
+        "latitude",        # GPS latitude (set at install)
+        "longitude",       # GPS longitude (set at install)
+        "location",        # human-readable location label
+    }
+)
+
+TUNING_FIELDS = REMOTE_SETTING_NAMES | frozenset({"inference_size"})
 
 
 class NamedZone(NamedTuple):
